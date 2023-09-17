@@ -16,8 +16,6 @@
   parent class for aircraft simulators
 */
 
-#define ALLOW_DOUBLE_MATH_FUNCTIONS
-
 #include "SIM_Aircraft.h"
 
 #include <stdio.h>
@@ -73,9 +71,9 @@ Aircraft::Aircraft(const char *frame_str) :
         sitl->ahrs_rotation_inv = sitl->ahrs_rotation.transposed();
     }
 
-    // init rangefinder array to -1 to signify no data
+    // init rangefinder array to NaN to signify no data
     for (uint8_t i = 0; i < ARRAY_SIZE(rangefinder_m); i++){
-        rangefinder_m[i] = -1.0f;
+        rangefinder_m[i] = nanf("");
     }
 }
 
@@ -1016,6 +1014,12 @@ void Aircraft::update_external_payload(const struct sitl_input &input)
     if (ie24) {
         ie24->update(input);
     }
+
+#if AP_TEST_DRONECAN_DRIVERS
+    if (dronecan) {
+        dronecan->update();
+    }
+#endif
 }
 
 void Aircraft::add_shove_forces(Vector3f &rot_accel, Vector3f &body_accel)

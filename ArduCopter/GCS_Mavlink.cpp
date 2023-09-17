@@ -579,6 +579,14 @@ const struct GCS_MAVLINK::stream_entries GCS_MAVLINK::all_stream_entries[] = {
     MAV_STREAM_TERMINATOR // must have this at end of stream_entries
 };
 
+MISSION_STATE GCS_MAVLINK_Copter::mission_state(const class AP_Mission &mission) const
+{
+    if (copter.mode_auto.paused()) {
+        return MISSION_STATE_PAUSED;
+    }
+    return GCS_MAVLINK::mission_state(mission);
+}
+
 bool GCS_MAVLINK_Copter::handle_guided_request(AP_Mission::Mission_Command &cmd)
 {
 #if MODE_AUTO_ENABLED == ENABLED
@@ -640,14 +648,14 @@ void GCS_MAVLINK_Copter::handle_command_ack(const mavlink_message_t &msg)
 */
 void GCS_MAVLINK_Copter::handle_landing_target(const mavlink_landing_target_t &packet, uint32_t timestamp_ms)
 {
-#if PRECISION_LANDING == ENABLED
+#if AC_PRECLAND_ENABLED
     copter.precland.handle_msg(packet, timestamp_ms);
 #endif
 }
 
-MAV_RESULT GCS_MAVLINK_Copter::_handle_command_preflight_calibration(const mavlink_command_long_t &packet, const mavlink_message_t &msg)
+MAV_RESULT GCS_MAVLINK_Copter::_handle_command_preflight_calibration(const mavlink_command_int_t &packet, const mavlink_message_t &msg)
 {
-    if (is_equal(packet.param6,1.0f)) {
+    if (packet.y == 1) {
         // compassmot calibration
         return copter.mavlink_compassmot(*this);
     }
@@ -728,18 +736,18 @@ MAV_RESULT GCS_MAVLINK_Copter::handle_command_int_do_reposition(const mavlink_co
 #endif
 }
 
-MAV_RESULT GCS_MAVLINK_Copter::handle_command_int_packet(const mavlink_command_int_t &packet)
+MAV_RESULT GCS_MAVLINK_Copter::handle_command_int_packet(const mavlink_command_int_t &packet, const mavlink_message_t &msg)
 {
     switch(packet.command) {
-    case MAV_CMD_DO_FOLLOW:
 #if MODE_FOLLOW_ENABLED == ENABLED
+    case MAV_CMD_DO_FOLLOW:
         // param1: sysid of target to follow
         if ((packet.param1 > 0) && (packet.param1 <= 255)) {
             copter.g2.follow.set_target_sysid((uint8_t)packet.param1);
             return MAV_RESULT_ACCEPTED;
         }
+        return MAV_RESULT_DENIED;
 #endif
-        return MAV_RESULT_UNSUPPORTED;
 
     case MAV_CMD_DO_REPOSITION:
         return handle_command_int_do_reposition(packet);
@@ -748,18 +756,38 @@ MAV_RESULT GCS_MAVLINK_Copter::handle_command_int_packet(const mavlink_command_i
     case MAV_CMD_DO_PAUSE_CONTINUE:
         return handle_command_pause_continue(packet);
 
+    case MAV_CMD_DO_MOTOR_TEST:
+        return handle_MAV_CMD_DO_MOTOR_TEST(packet);
+
+#if AC_MAVLINK_SOLO_BUTTON_COMMAND_HANDLING_ENABLED
+    // Solo user presses pause button
+    case MAV_CMD_SOLO_BTN_PAUSE_CLICK:
+        return handle_MAV_CMD_SOLO_BTN_PAUSE_CLICK(packet);
+    // Solo user presses Fly button:
+    case MAV_CMD_SOLO_BTN_FLY_HOLD:
+        return handle_MAV_CMD_SOLO_BTN_FLY_HOLD(packet);
+    // Solo user holds down Fly button for a couple of seconds
+    case MAV_CMD_SOLO_BTN_FLY_CLICK:
+        return handle_MAV_CMD_SOLO_BTN_FLY_CLICK(packet);
+#endif
+
+#if AP_WINCH_ENABLED
+    case MAV_CMD_DO_WINCH:
+        return handle_MAV_CMD_DO_WINCH(packet);
+#endif
+
     default:
-        return GCS_MAVLINK::handle_command_int_packet(packet);
+        return GCS_MAVLINK::handle_command_int_packet(packet, msg);
     }
 }
 
 #if HAL_MOUNT_ENABLED
-MAV_RESULT GCS_MAVLINK_Copter::handle_command_mount(const mavlink_command_long_t &packet)
+MAV_RESULT GCS_MAVLINK_Copter::handle_command_mount(const mavlink_command_int_t &packet, const mavlink_message_t &msg)
 {
     switch (packet.command) {
     case MAV_CMD_DO_MOUNT_CONTROL:
         // if vehicle has a camera mount but it doesn't do pan control then yaw the entire vehicle instead
-        if ((copter.camera_mount.get_mount_type() != copter.camera_mount.MountType::Mount_Type_None) &&
+        if ((copter.camera_mount.get_mount_type() != AP_Mount::Type::None) &&
             !copter.camera_mount.has_pan_control()) {
             copter.flightmode->auto_yaw.set_yaw_angle_rate((float)packet.param3, 0.0f);
         }
@@ -767,11 +795,11 @@ MAV_RESULT GCS_MAVLINK_Copter::handle_command_mount(const mavlink_command_long_t
     default:
         break;
     }
-    return GCS_MAVLINK::handle_command_mount(packet);
+    return GCS_MAVLINK::handle_command_mount(packet, msg);
 }
 #endif
 
-MAV_RESULT GCS_MAVLINK_Copter::handle_command_long_packet(const mavlink_command_long_t &packet)
+MAV_RESULT GCS_MAVLINK_Copter::handle_command_long_packet(const mavlink_command_long_t &packet, const mavlink_message_t &msg)
 {
     switch(packet.command) {
 
@@ -817,16 +845,6 @@ MAV_RESULT GCS_MAVLINK_Copter::handle_command_long_packet(const mavlink_command_
             return MAV_RESULT_FAILED;
         }
         return MAV_RESULT_ACCEPTED;
-
-#if MODE_FOLLOW_ENABLED == ENABLED
-    case MAV_CMD_DO_FOLLOW:
-        // param1: sysid of target to follow
-        if ((packet.param1 > 0) && (packet.param1 <= 255)) {
-            copter.g2.follow.set_target_sysid((uint8_t)packet.param1);
-            return MAV_RESULT_ACCEPTED;
-        }
-        return MAV_RESULT_FAILED;
-#endif
 
     case MAV_CMD_CONDITION_YAW:
         // param1 : target angle [0-360]
@@ -900,7 +918,13 @@ MAV_RESULT GCS_MAVLINK_Copter::handle_command_long_packet(const mavlink_command_
         return MAV_RESULT_FAILED;
 #endif
 
-    case MAV_CMD_DO_MOTOR_TEST:
+    default:
+        return GCS_MAVLINK::handle_command_long_packet(packet, msg);
+    }
+}
+
+MAV_RESULT GCS_MAVLINK_Copter::handle_MAV_CMD_DO_MOTOR_TEST(const mavlink_command_int_t &packet)
+{
         // param1 : motor sequence number (a number from 1 to max number of motors on the vehicle)
         // param2 : throttle type (0=throttle percentage, 1=PWM, 2=pilot throttle channel pass-through. See MOTOR_TEST_THROTTLE_TYPE enum)
         // param3 : throttle (range depends upon param2)
@@ -912,10 +936,12 @@ MAV_RESULT GCS_MAVLINK_Copter::handle_command_long_packet(const mavlink_command_
                                                (uint8_t)packet.param2,
                                                packet.param3,
                                                packet.param4,
-                                               (uint8_t)packet.param5);
+                                               (uint8_t)packet.x);
+}
 
 #if AP_WINCH_ENABLED
-    case MAV_CMD_DO_WINCH:
+MAV_RESULT GCS_MAVLINK_Copter::handle_MAV_CMD_DO_WINCH(const mavlink_command_int_t &packet)
+{
         // param1 : winch number (ignored)
         // param2 : action (0=relax, 1=relative length control, 2=rate control). See WINCH_ACTIONS enum.
         if (!copter.g2.winch.enabled()) {
@@ -936,27 +962,12 @@ MAV_RESULT GCS_MAVLINK_Copter::handle_command_long_packet(const mavlink_command_
             break;
         }
         return MAV_RESULT_FAILED;
-#endif
+}
+#endif  // AP_WINCH_ENABLED
 
-#if AP_LANDINGGEAR_ENABLED
-        case MAV_CMD_AIRFRAME_CONFIGURATION: {
-            // Param 1: Select which gear, not used in ArduPilot
-            // Param 2: 0 = Deploy, 1 = Retract
-            // For safety, anything other than 1 will deploy
-            switch ((uint8_t)packet.param2) {
-                case 1:
-                    copter.landinggear.set_position(AP_LandingGear::LandingGear_Retract);
-                    return MAV_RESULT_ACCEPTED;
-                default:
-                    copter.landinggear.set_position(AP_LandingGear::LandingGear_Deploy);
-                    return MAV_RESULT_ACCEPTED;
-            }
-            return MAV_RESULT_FAILED;
-        }
-#endif
-
-        /* Solo user presses Fly button */
-    case MAV_CMD_SOLO_BTN_FLY_CLICK: {
+#if AC_MAVLINK_SOLO_BUTTON_COMMAND_HANDLING_ENABLED
+MAV_RESULT GCS_MAVLINK_Copter::handle_MAV_CMD_SOLO_BTN_FLY_CLICK(const mavlink_command_int_t &packet)
+{
         if (copter.failsafe.radio) {
             return MAV_RESULT_ACCEPTED;
         }
@@ -966,10 +977,10 @@ MAV_RESULT GCS_MAVLINK_Copter::handle_command_long_packet(const mavlink_command_
             copter.set_mode(Mode::Number::ALT_HOLD, ModeReason::GCS_COMMAND);
         }
         return MAV_RESULT_ACCEPTED;
-    }
+}
 
-        /* Solo user holds down Fly button for a couple of seconds */
-    case MAV_CMD_SOLO_BTN_FLY_HOLD: {
+MAV_RESULT GCS_MAVLINK_Copter::handle_MAV_CMD_SOLO_BTN_FLY_HOLD(const mavlink_command_int_t &packet)
+{
         if (copter.failsafe.radio) {
             return MAV_RESULT_ACCEPTED;
         }
@@ -987,10 +998,10 @@ MAV_RESULT GCS_MAVLINK_Copter::handle_command_long_packet(const mavlink_command_
             copter.set_mode(Mode::Number::LAND, ModeReason::GCS_COMMAND);
         }
         return MAV_RESULT_ACCEPTED;
-    }
+}
 
-        /* Solo user presses pause button */
-    case MAV_CMD_SOLO_BTN_PAUSE_CLICK: {
+MAV_RESULT GCS_MAVLINK_Copter::handle_MAV_CMD_SOLO_BTN_PAUSE_CLICK(const mavlink_command_int_t &packet)
+{
         if (copter.failsafe.radio) {
             return MAV_RESULT_ACCEPTED;
         }
@@ -1020,18 +1031,8 @@ MAV_RESULT GCS_MAVLINK_Copter::handle_command_long_packet(const mavlink_command_
             }
         }
         return MAV_RESULT_ACCEPTED;
-    }
-
-    // pause or resume an auto mission
-    case MAV_CMD_DO_PAUSE_CONTINUE: {
-        mavlink_command_int_t packet_int;
-        GCS_MAVLINK_Copter::convert_COMMAND_LONG_to_COMMAND_INT(packet, packet_int);
-        return handle_command_pause_continue(packet_int);
-    }
-    default:
-        return GCS_MAVLINK::handle_command_long_packet(packet);
-    }
 }
+#endif  // AC_MAVLINK_SOLO_BUTTON_COMMAND_HANDLING_ENABLED
 
 MAV_RESULT GCS_MAVLINK_Copter::handle_command_pause_continue(const mavlink_command_int_t &packet)
 {
@@ -1061,7 +1062,7 @@ void GCS_MAVLINK_Copter::handle_mount_message(const mavlink_message_t &msg)
     switch (msg.msgid) {
     case MAVLINK_MSG_ID_MOUNT_CONTROL:
         // if vehicle has a camera mount but it doesn't do pan control then yaw the entire vehicle instead
-        if ((copter.camera_mount.get_mount_type() != copter.camera_mount.MountType::Mount_Type_None) &&
+        if ((copter.camera_mount.get_mount_type() != AP_Mount::Type::None) &&
             !copter.camera_mount.has_pan_control()) {
             copter.flightmode->auto_yaw.set_yaw_angle_rate(
                 mavlink_msg_mount_control_get_input_c(&msg) * 0.01f,
@@ -1087,6 +1088,20 @@ void GCS_MAVLINK_Copter::handle_manual_control_axes(const mavlink_manual_control
     manual_override(copter.channel_pitch, packet.x, 1000, 2000, tnow, true);
     manual_override(copter.channel_throttle, packet.z, 0, 1000, tnow);
     manual_override(copter.channel_yaw, packet.r, 1000, 2000, tnow);
+}
+
+// sanity check velocity or acceleration vector components are numbers
+// (e.g. not NaN) and below 1000. vec argument units are in meters/second or
+// metres/second/second
+bool GCS_MAVLINK_Copter::sane_vel_or_acc_vector(const Vector3f &vec) const
+{
+    for (uint8_t i=0; i<3; i++) {
+        // consider velocity invalid if any component nan or >1000(m/s or m/s/s)
+        if (isnan(vec[i]) || fabsf(vec[i]) > 1000) {
+            return false;
+        }
+    }
+    return true;
 }
 
 void GCS_MAVLINK_Copter::handleMessage(const mavlink_message_t &msg)
@@ -1249,8 +1264,13 @@ void GCS_MAVLINK_Copter::handleMessage(const mavlink_message_t &msg)
         // prepare velocity
         Vector3f vel_vector;
         if (!vel_ignore) {
-            // convert to cm
-            vel_vector = Vector3f(packet.vx * 100.0f, packet.vy * 100.0f, -packet.vz * 100.0f);
+            vel_vector = Vector3f{packet.vx, packet.vy, -packet.vz};
+            if (!sane_vel_or_acc_vector(vel_vector)) {
+                // input is not valid so stop
+                copter.mode_guided.init(true);
+                return;
+            }
+            vel_vector *= 100;  // m/s -> cm/s
             // rotate to body-frame if necessary
             if (packet.coordinate_frame == MAV_FRAME_BODY_NED || packet.coordinate_frame == MAV_FRAME_BODY_OFFSET_NED) {
                 copter.rotate_body_frame_to_NE(vel_vector.x, vel_vector.y);
@@ -1345,8 +1365,13 @@ void GCS_MAVLINK_Copter::handleMessage(const mavlink_message_t &msg)
         // prepare velocity
         Vector3f vel_vector;
         if (!vel_ignore) {
-            // convert to cm
-            vel_vector = Vector3f(packet.vx * 100.0f, packet.vy * 100.0f, -packet.vz * 100.0f);
+            vel_vector = Vector3f{packet.vx, packet.vy, -packet.vz};
+            if (!sane_vel_or_acc_vector(vel_vector)) {
+                // input is not valid so stop
+                copter.mode_guided.init(true);
+                return;
+            }
+            vel_vector *= 100;  // m/s -> cm/s
         }
 
         // prepare acceleration

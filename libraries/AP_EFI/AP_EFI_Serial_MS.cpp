@@ -12,13 +12,16 @@
    You should have received a copy of the GNU General Public License
    along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
- 
-#include <AP_HAL/AP_HAL.h>
-#include "AP_EFI_Serial_MS.h"
 
-#if HAL_EFI_ENABLED
+#include "AP_EFI_config.h"
+
+#if AP_EFI_SERIAL_MS_ENABLED
+
+#include <AP_HAL/AP_HAL.h>
 #include <AP_Math/AP_Math.h>
 #include <AP_SerialManager/AP_SerialManager.h>
+
+#include "AP_EFI_Serial_MS.h"
 
 extern const AP_HAL::HAL &hal;
 
@@ -44,7 +47,7 @@ void AP_EFI_Serial_MS::update()
         copy_to_frontend();
     }
 
-    if (port->available() == 0 || now - last_response_ms > 200) {
+    if (now - last_response_ms > 100) {
         port->discard_input();
         // Request an update from the realtime table (7).
         // The data we need start at offset 6 and ends at 129
@@ -230,4 +233,4 @@ uint32_t AP_EFI_Serial_MS::CRC32_compute_byte(uint32_t crc, uint8_t data)
     return crc;
 }
 
-#endif // HAL_EFI_ENABLED
+#endif  // AP_EFI_SERIAL_MS_ENABLED
